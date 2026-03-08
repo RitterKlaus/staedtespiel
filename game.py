@@ -1,6 +1,7 @@
 import pygame
 import random
 import sqlite3
+from stadtnamen import STADTNAMEN
 
 TILE_SIZE = 64
 SIDEBAR_WIDTH = 240
@@ -39,7 +40,8 @@ def erzeuge_karte():
 
 DB_PFAD = "spiel.db"
 
-def speichere_karte(karte):
+def speichere_karte(karte, staedte):
+    speichere_staedte(staedte)
     with sqlite3.connect(DB_PFAD) as con:
         con.execute("CREATE TABLE IF NOT EXISTS karte (row INTEGER, col INTEGER, gelaende TEXT)")
         con.execute("DELETE FROM karte")
@@ -61,7 +63,37 @@ def lade_karte_aus_db():
     except sqlite3.OperationalError:
         return None
 
-KARTE = lade_karte_aus_db() or erzeuge_karte()
+def erzeuge_staedte(anzahl=8):
+    positionen = set()
+    while len(positionen) < anzahl:
+        positionen.add((random.randrange(ROWS), random.randrange(COLS)))
+    namen = random.sample(STADTNAMEN, anzahl)
+    return {pos: name for pos, name in zip(positionen, namen)}
+
+def speichere_staedte(staedte):
+    with sqlite3.connect(DB_PFAD) as con:
+        con.execute("CREATE TABLE IF NOT EXISTS staedte (row INTEGER, col INTEGER, name TEXT)")
+        con.execute("DELETE FROM staedte")
+        con.executemany(
+            "INSERT INTO staedte (row, col, name) VALUES (?, ?, ?)",
+            [(r, c, name) for (r, c), name in staedte.items()],
+        )
+
+def lade_staedte_aus_db():
+    try:
+        with sqlite3.connect(DB_PFAD) as con:
+            rows = con.execute("SELECT row, col, name FROM staedte").fetchall()
+        return {(r, c): name for r, c, name in rows} if rows else None
+    except sqlite3.OperationalError:
+        return None
+
+gespeicherte_karte = lade_karte_aus_db()
+if gespeicherte_karte:
+    KARTE = gespeicherte_karte
+    STAEDTE = lade_staedte_aus_db() or erzeuge_staedte()
+else:
+    KARTE = erzeuge_karte()
+    STAEDTE = erzeuge_staedte()
 
 MAP_WIDTH  = COLS * TILE_SIZE
 MAP_HEIGHT = ROWS * TILE_SIZE
@@ -108,7 +140,7 @@ def zeichne_topbar(screen, font, zug):
     return naechster_rect, beenden_rect
 
 
-def zeichne_karte(screen, tiles, auswahl):
+def zeichne_karte(screen, tiles, auswahl, staedte):
     for row in range(ROWS):
         for col in range(COLS):
             gelaende = KARTE[row][col]
@@ -116,13 +148,19 @@ def zeichne_karte(screen, tiles, auswahl):
             y = TOPBAR_HEIGHT + row * TILE_SIZE
             screen.blit(tiles[gelaende], (x, y))
 
+    for (sr, sc) in staedte:
+        cx = sc * TILE_SIZE + TILE_SIZE // 4
+        cy = TOPBAR_HEIGHT + sr * TILE_SIZE + 3 * TILE_SIZE // 4
+        pygame.draw.circle(screen, (200, 0, 0), (cx, cy), 10)
+        pygame.draw.circle(screen, (255, 80, 80), (cx, cy), 10, 2)
+
     if auswahl:
         col, row = auswahl
         rect = pygame.Rect(col * TILE_SIZE, TOPBAR_HEIGHT + row * TILE_SIZE, TILE_SIZE, TILE_SIZE)
         pygame.draw.rect(screen, (255, 255, 0), rect, 3)
 
 
-def zeichne_sidebar(screen, font, auswahl):
+def zeichne_sidebar(screen, font, auswahl, staedte):
     sidebar_rect = pygame.Rect(MAP_WIDTH, TOPBAR_HEIGHT, SIDEBAR_WIDTH, MAP_HEIGHT)
     pygame.draw.rect(screen, (30, 30, 30), sidebar_rect)
     pygame.draw.line(screen, (80, 80, 80), (MAP_WIDTH, TOPBAR_HEIGHT), (MAP_WIDTH, TOPBAR_HEIGHT + MAP_HEIGHT), 2)
@@ -148,6 +186,10 @@ def zeichne_sidebar(screen, font, auswahl):
     pos_surface = font.render(f"Spalte {col + 1}, Zeile {row + 1}", True, (160, 160, 160))
     screen.blit(pos_surface, (MAP_WIDTH + 16, TOPBAR_HEIGHT + 84))
 
+    if (row, col) in staedte:
+        stadt_surface = font.render(staedte[(row, col)], True, (220, 100, 100))
+        screen.blit(stadt_surface, (MAP_WIDTH + 16, TOPBAR_HEIGHT + 112))
+
 
 def main():
     pygame.init()
@@ -155,6 +197,7 @@ def main():
     pygame.display.set_caption("Spiel")
     clock = pygame.time.Clock()
     font = pygame.font.SysFont(None, 26)
+    klein_font = pygame.font.SysFont(None, 18)
 
     tiles = lade_tiles()
     auswahl = None  # (col, row) des angeklickten Feldes
@@ -166,7 +209,7 @@ def main():
     while running:
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
-                speichere_karte(KARTE)
+                speichere_karte(KARTE, STAEDTE)
                 running = False
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 mx, my = event.pos
@@ -174,7 +217,7 @@ def main():
                     if naechster_btn.collidepoint(mx, my):
                         zug += 1
                     elif beenden_btn.collidepoint(mx, my):
-                        speichere_karte(KARTE)
+                        speichere_karte(KARTE, STAEDTE)
                         running = False
                 elif mx < MAP_WIDTH:
                     col = mx // TILE_SIZE
@@ -182,8 +225,8 @@ def main():
                     auswahl = (col, row)
 
         naechster_btn, beenden_btn = zeichne_topbar(screen, font, zug)
-        zeichne_karte(screen, tiles, auswahl)
-        zeichne_sidebar(screen, font, auswahl)
+        zeichne_karte(screen, tiles, auswahl, STAEDTE)
+        zeichne_sidebar(screen, font, auswahl, STAEDTE)
         pygame.display.flip()
         clock.tick(60)
 
