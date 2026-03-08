@@ -218,7 +218,26 @@ def zeichne_topbar(screen, font, zug, gold):
     return naechster_rect, beenden_rect
 
 
-def zeichne_karte(screen, tiles, auswahl, staedte):
+def benachbarte_felder(row, col):
+    nachbarn = []
+    for dr in (-1, 0, 1):
+        for dc in (-1, 0, 1):
+            if dr == 0 and dc == 0:
+                continue
+            r, c = row + dr, col + dc
+            if 0 <= r < ROWS and 0 <= c < COLS:
+                nachbarn.append((r, c))
+    return nachbarn
+
+EINHEIT_KUERZEL = {"Späher": "S", "Kämpfer": "K", "Ritter": "R"}
+EINHEIT_FARBE   = {
+    BESITZER_SPIELER: (60, 200, 60),
+    BESITZER_KI:      (200, 60, 60),
+    BESITZER_KEINER:  (160, 160, 160),
+}
+
+def zeichne_karte(screen, tiles, auswahl, staedte, einheiten, symbol_font,
+                  beweg_modus=False, beweg_ursprung=None):
     for row in range(ROWS):
         for col in range(COLS):
             gelaende = KARTE[row][col]
@@ -238,6 +257,36 @@ def zeichne_karte(screen, tiles, auswahl, staedte):
         pygame.draw.circle(screen, farbe_innen, (cx, cy), 10)
         pygame.draw.circle(screen, farbe_rand, (cx, cy), 10, 2)
 
+    # Einheitensymbole: unteres rechtes Viertel
+    SYM = 13  # Symbol-Breite/-Höhe
+    GAP = 2
+    einheiten_pro_feld = {}
+    for e in einheiten:
+        einheiten_pro_feld.setdefault((e["row"], e["col"]), []).append(e)
+    for (er, ec), elist in einheiten_pro_feld.items():
+        qx = ec * TILE_SIZE + TILE_SIZE // 2   # unteres rechtes Viertel: x-Start
+        qy = TOPBAR_HEIGHT + er * TILE_SIZE + TILE_SIZE // 2
+        for i, e in enumerate(elist[:4]):      # max. 4 Symbole
+            sx = qx + (i % 2) * (SYM + GAP)
+            sy = qy + (i // 2) * (SYM + GAP)
+            farbe = EINHEIT_FARBE[e["besitzer"]]
+            pygame.draw.rect(screen, farbe, pygame.Rect(sx, sy, SYM, SYM), border_radius=2)
+            pygame.draw.rect(screen, (0, 0, 0), pygame.Rect(sx, sy, SYM, SYM), 1, border_radius=2)
+            lbl = symbol_font.render(EINHEIT_KUERZEL.get(e["name"], "?"), True, (0, 0, 0))
+            screen.blit(lbl, (sx + (SYM - lbl.get_width()) // 2, sy + (SYM - lbl.get_height()) // 2))
+        if len(elist) > 4:
+            mehr = symbol_font.render(f"+{len(elist)-4}", True, (255, 255, 255))
+            screen.blit(mehr, (qx, qy + 2 * (SYM + GAP)))
+
+    if beweg_modus and beweg_ursprung:
+        ur, uc = beweg_ursprung
+        for nr, nc in benachbarte_felder(ur, uc):
+            overlay = pygame.Surface((TILE_SIZE, TILE_SIZE), pygame.SRCALPHA)
+            overlay.fill((0, 180, 255, 80))
+            screen.blit(overlay, (nc * TILE_SIZE, TOPBAR_HEIGHT + nr * TILE_SIZE))
+            pygame.draw.rect(screen, (0, 180, 255),
+                             pygame.Rect(nc * TILE_SIZE, TOPBAR_HEIGHT + nr * TILE_SIZE, TILE_SIZE, TILE_SIZE), 2)
+
     if auswahl:
         col, row = auswahl
         rect = pygame.Rect(col * TILE_SIZE, TOPBAR_HEIGHT + row * TILE_SIZE, TILE_SIZE, TILE_SIZE)
@@ -250,18 +299,21 @@ BESITZER_LABEL = {
     BESITZER_KEINER:  ("Keiner",        (160, 160, 160)),
 }
 
-def zeichne_sidebar(screen, font, auswahl, staedte, auswahl_einheit, rekrutierung, einheiten):
+def zeichne_sidebar(screen, font, auswahl, staedte, auswahl_einheit, rekrutierung, einheiten,
+                    auswahl_einheit_auf_karte, beweg_modus):
     sidebar_rect = pygame.Rect(MAP_WIDTH, TOPBAR_HEIGHT, SIDEBAR_WIDTH, MAP_HEIGHT)
     pygame.draw.rect(screen, (30, 30, 30), sidebar_rect)
     pygame.draw.line(screen, (80, 80, 80), (MAP_WIDTH, TOPBAR_HEIGHT), (MAP_WIDTH, TOPBAR_HEIGHT + MAP_HEIGHT), 2)
 
     einheit_rects = []
     rekrutieren_rect = pygame.Rect(0, 0, 0, 0)
+    einheit_auf_karte_rects = []  # list of (rect, einheiten_index)
+    bewegen_rect = pygame.Rect(0, 0, 0, 0)
 
     if auswahl is None:
         text = font.render("Kein Feld gewählt", True, (160, 160, 160))
         screen.blit(text, (MAP_WIDTH + 16, TOPBAR_HEIGHT + 20))
-        return einheit_rects, rekrutieren_rect
+        return einheit_rects, rekrutieren_rect, einheit_auf_karte_rects, bewegen_rect
 
     col, row = auswahl
     gelaende = KARTE[row][col]
@@ -313,22 +365,34 @@ def zeichne_sidebar(screen, font, auswahl, staedte, auswahl_einheit, rekrutierun
     sep(y); y += 12
     screen.blit(font.render("Einheiten", True, (200, 200, 200)), (MAP_WIDTH + 16, y))
     y += 28; sep(y); y += 12
-    einheiten_hier = [e for e in einheiten if e["row"] == row and e["col"] == col]
+    einheiten_hier = [(i, e) for i, e in enumerate(einheiten) if e["row"] == row and e["col"] == col]
     if einheiten_hier:
-        gruppen = {}
-        for e in einheiten_hier:
-            gruppen.setdefault(e["besitzer"], []).append(e["name"])
-        for besitzer, namen in gruppen.items():
-            lbl, farbe = BESITZER_LABEL[besitzer]
-            screen.blit(font.render(lbl + ":", True, farbe), (MAP_WIDTH + 16, y))
-            y += 22
-            for name in namen:
-                screen.blit(font.render(f"  {name}", True, (200, 200, 200)), (MAP_WIDTH + 16, y))
-                y += 20
+        for idx, e in einheiten_hier:
+            erect = pygame.Rect(MAP_WIDTH + 8, y - 2, SIDEBAR_WIDTH - 16, 22)
+            einheit_auf_karte_rects.append((erect, idx))
+            if auswahl_einheit_auf_karte == idx:
+                pygame.draw.rect(screen, (50, 70, 50), erect, border_radius=3)
+            lbl, farbe = BESITZER_LABEL[e["besitzer"]]
+            hat_auftrag = "bewegen_ziel" in e
+            name_text = f"{e['name']}  [{lbl[0]}]" + (" →" if hat_auftrag else "")
+            screen.blit(font.render(name_text, True, farbe), (MAP_WIDTH + 16, y))
+            y += 24
+        # Bewegen-Button für ausgewählte Spieler-Einheit
+        if auswahl_einheit_auf_karte is not None:
+            sel = einheiten[auswahl_einheit_auf_karte]
+            if sel["besitzer"] == BESITZER_SPIELER and sel["row"] == row and sel["col"] == col:
+                bew_str = "Bewegen abbrechen" if beweg_modus else "Bewegen"
+                bew_farbe = (80, 60, 20) if beweg_modus else (40, 80, 40)
+                bew_text = font.render(bew_str, True, (220, 220, 220))
+                bewegen_rect = pygame.Rect(MAP_WIDTH + 16, y, bew_text.get_width() + 20, 26)
+                pygame.draw.rect(screen, bew_farbe, bewegen_rect, border_radius=4)
+                pygame.draw.rect(screen, (100, 160, 100), bewegen_rect, 1, border_radius=4)
+                screen.blit(bew_text, (MAP_WIDTH + 26, y + (26 - bew_text.get_height()) // 2))
+                y += 34
     else:
         screen.blit(font.render("Keine", True, (100, 100, 100)), (MAP_WIDTH + 16, y))
 
-    return einheit_rects, rekrutieren_rect
+    return einheit_rects, rekrutieren_rect, einheit_auf_karte_rects, bewegen_rect
 
 
 def main():
@@ -338,10 +402,13 @@ def main():
     clock = pygame.time.Clock()
     font = pygame.font.SysFont(None, 26)
     klein_font = pygame.font.SysFont(None, 18)
+    symbol_font = pygame.font.SysFont(None, 14)
 
     tiles = lade_tiles()
     auswahl = None  # (col, row) des angeklickten Feldes
-    auswahl_einheit = None  # Index in EINHEITEN
+    auswahl_einheit = None           # Index in EINHEITEN (Rekrutierung)
+    auswahl_einheit_auf_karte = None # Index in einheiten-Liste
+    beweg_modus = False
     rekrutierung = lade_rekrutierung_aus_db() if gespeicherte_karte else None
     einheiten = lade_einheiten_aus_db() if gespeicherte_karte else []
     zug = 1
@@ -350,6 +417,8 @@ def main():
     beenden_btn = pygame.Rect(0, 0, 0, 0)
     einheit_rects = []
     rekrutieren_rect = pygame.Rect(0, 0, 0, 0)
+    einheit_auf_karte_rects = []
+    bewegen_rect = pygame.Rect(0, 0, 0, 0)
 
     running = True
     while running:
@@ -372,6 +441,11 @@ def main():
                             })
                             rekrutierung = None
                             auswahl_einheit = None
+                        # Bewegungsaufträge ausführen
+                        for e in einheiten:
+                            if "bewegen_ziel" in e:
+                                e["row"], e["col"] = e.pop("bewegen_ziel")
+                        beweg_modus = False
                     elif beenden_btn.collidepoint(mx, my):
                         speichere_karte(KARTE, STAEDTE, gold, einheiten, rekrutierung)
                         running = False
@@ -386,16 +460,37 @@ def main():
                             if gold >= einheit["kosten"]:
                                 gold -= einheit["kosten"]
                                 rekrutierung = {**einheit, "row": auswahl[1], "col": auswahl[0]}
+                    for erect, eidx in einheit_auf_karte_rects:
+                        if erect.collidepoint(mx, my):
+                            auswahl_einheit_auf_karte = eidx
+                            beweg_modus = False
+                            break
+                    if bewegen_rect.collidepoint(mx, my):
+                        beweg_modus = not beweg_modus
                 elif mx < MAP_WIDTH:
                     col = mx // TILE_SIZE
                     row = (my - TOPBAR_HEIGHT) // TILE_SIZE
-                    if (col, row) != auswahl:
-                        auswahl_einheit = None
-                    auswahl = (col, row)
+                    if beweg_modus and auswahl_einheit_auf_karte is not None:
+                        e = einheiten[auswahl_einheit_auf_karte]
+                        if (row, col) in benachbarte_felder(e["row"], e["col"]):
+                            e["bewegen_ziel"] = (row, col)
+                            beweg_modus = False
+                    else:
+                        if (col, row) != auswahl:
+                            auswahl_einheit = None
+                            auswahl_einheit_auf_karte = None
+                            beweg_modus = False
+                        auswahl = (col, row)
 
         naechster_btn, beenden_btn = zeichne_topbar(screen, font, zug, gold)
-        zeichne_karte(screen, tiles, auswahl, STAEDTE)
-        einheit_rects, rekrutieren_rect = zeichne_sidebar(screen, font, auswahl, STAEDTE, auswahl_einheit, rekrutierung, einheiten)
+        beweg_ursprung = None
+        if beweg_modus and auswahl_einheit_auf_karte is not None:
+            e = einheiten[auswahl_einheit_auf_karte]
+            beweg_ursprung = (e["row"], e["col"])
+        zeichne_karte(screen, tiles, auswahl, STAEDTE, einheiten, symbol_font, beweg_modus, beweg_ursprung)
+        einheit_rects, rekrutieren_rect, einheit_auf_karte_rects, bewegen_rect = zeichne_sidebar(
+            screen, font, auswahl, STAEDTE, auswahl_einheit, rekrutierung, einheiten,
+            auswahl_einheit_auf_karte, beweg_modus)
         pygame.display.flip()
         clock.tick(60)
 
