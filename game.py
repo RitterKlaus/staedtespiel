@@ -40,8 +40,22 @@ def erzeuge_karte():
 
 DB_PFAD = "spiel.db"
 
-def speichere_karte(karte, staedte):
+def speichere_gold(gold):
+    with sqlite3.connect(DB_PFAD) as con:
+        con.execute("CREATE TABLE IF NOT EXISTS spieler (id INTEGER PRIMARY KEY, gold INTEGER)")
+        con.execute("INSERT OR REPLACE INTO spieler (id, gold) VALUES (1, ?)", (gold,))
+
+def lade_gold_aus_db():
+    try:
+        with sqlite3.connect(DB_PFAD) as con:
+            row = con.execute("SELECT gold FROM spieler WHERE id = 1").fetchone()
+        return row[0] if row else None
+    except sqlite3.OperationalError:
+        return None
+
+def speichere_karte(karte, staedte, gold):
     speichere_staedte(staedte)
+    speichere_gold(gold)
     with sqlite3.connect(DB_PFAD) as con:
         con.execute("CREATE TABLE IF NOT EXISTS karte (row INTEGER, col INTEGER, gelaende TEXT)")
         con.execute("DELETE FROM karte")
@@ -63,27 +77,47 @@ def lade_karte_aus_db():
     except sqlite3.OperationalError:
         return None
 
+BESITZER_SPIELER = "spieler"
+BESITZER_KI      = "ki"
+BESITZER_KEINER  = None
+
 def erzeuge_staedte(anzahl=8):
-    positionen = set()
+    positionen = list({
+        (random.randrange(ROWS), random.randrange(COLS))
+        for _ in range(anzahl * 10)
+    })[:anzahl]
     while len(positionen) < anzahl:
-        positionen.add((random.randrange(ROWS), random.randrange(COLS)))
+        pos = (random.randrange(ROWS), random.randrange(COLS))
+        if pos not in positionen:
+            positionen.append(pos)
     namen = random.sample(STADTNAMEN, anzahl)
-    return {pos: name for pos, name in zip(positionen, namen)}
+    spieler_pos = random.choice(positionen)
+    return {
+        pos: {
+            "name": name,
+            "produktion": random.randint(2, 12),
+            "besitzer": BESITZER_SPIELER if pos == spieler_pos else BESITZER_KEINER,
+        }
+        for pos, name in zip(positionen, namen)
+    }
 
 def speichere_staedte(staedte):
     with sqlite3.connect(DB_PFAD) as con:
-        con.execute("CREATE TABLE IF NOT EXISTS staedte (row INTEGER, col INTEGER, name TEXT)")
+        con.execute("CREATE TABLE IF NOT EXISTS staedte (row INTEGER, col INTEGER, name TEXT, produktion INTEGER, besitzer TEXT)")
         con.execute("DELETE FROM staedte")
         con.executemany(
-            "INSERT INTO staedte (row, col, name) VALUES (?, ?, ?)",
-            [(r, c, name) for (r, c), name in staedte.items()],
+            "INSERT INTO staedte (row, col, name, produktion, besitzer) VALUES (?, ?, ?, ?, ?)",
+            [(r, c, s["name"], s["produktion"], s["besitzer"]) for (r, c), s in staedte.items()],
         )
 
 def lade_staedte_aus_db():
     try:
         with sqlite3.connect(DB_PFAD) as con:
-            rows = con.execute("SELECT row, col, name FROM staedte").fetchall()
-        return {(r, c): name for r, c, name in rows} if rows else None
+            rows = con.execute("SELECT row, col, name, produktion, besitzer FROM staedte").fetchall()
+        return {
+            (r, c): {"name": name, "produktion": prod, "besitzer": besitzer or BESITZER_KEINER}
+            for r, c, name, prod, besitzer in rows
+        } if rows else None
     except sqlite3.OperationalError:
         return None
 
@@ -111,12 +145,14 @@ def lade_tiles():
     }
 
 
-def zeichne_topbar(screen, font, zug):
+def zeichne_topbar(screen, font, zug, gold):
     topbar_rect = pygame.Rect(0, 0, MAP_WIDTH + SIDEBAR_WIDTH, TOPBAR_HEIGHT)
     pygame.draw.rect(screen, (20, 20, 20), topbar_rect)
     pygame.draw.line(screen, (80, 80, 80), (0, TOPBAR_HEIGHT - 1), (MAP_WIDTH + SIDEBAR_WIDTH, TOPBAR_HEIGHT - 1), 1)
     text = font.render(f"Zug {zug}", True, (220, 220, 220))
     screen.blit(text, (12, (TOPBAR_HEIGHT - text.get_height()) // 2))
+    gold_text = font.render(f"Gold: {gold}", True, (255, 215, 0))
+    screen.blit(gold_text, (100, (TOPBAR_HEIGHT - gold_text.get_height()) // 2))
 
     btn_h = TOPBAR_HEIGHT - 8
     btn_y = 4
@@ -148,11 +184,17 @@ def zeichne_karte(screen, tiles, auswahl, staedte):
             y = TOPBAR_HEIGHT + row * TILE_SIZE
             screen.blit(tiles[gelaende], (x, y))
 
-    for (sr, sc) in staedte:
+    FARBE_BESITZER = {
+        BESITZER_SPIELER: ((0, 180, 0),   (80, 255, 80)),
+        BESITZER_KI:      ((180, 0, 0),   (255, 80, 80)),
+        BESITZER_KEINER:  ((120, 120, 120), (200, 200, 200)),
+    }
+    for (sr, sc), stadt in staedte.items():
         cx = sc * TILE_SIZE + TILE_SIZE // 4
         cy = TOPBAR_HEIGHT + sr * TILE_SIZE + 3 * TILE_SIZE // 4
-        pygame.draw.circle(screen, (200, 0, 0), (cx, cy), 10)
-        pygame.draw.circle(screen, (255, 80, 80), (cx, cy), 10, 2)
+        farbe_innen, farbe_rand = FARBE_BESITZER[stadt["besitzer"]]
+        pygame.draw.circle(screen, farbe_innen, (cx, cy), 10)
+        pygame.draw.circle(screen, farbe_rand, (cx, cy), 10, 2)
 
     if auswahl:
         col, row = auswahl
@@ -187,8 +229,18 @@ def zeichne_sidebar(screen, font, auswahl, staedte):
     screen.blit(pos_surface, (MAP_WIDTH + 16, TOPBAR_HEIGHT + 84))
 
     if (row, col) in staedte:
-        stadt_surface = font.render(staedte[(row, col)], True, (220, 100, 100))
+        stadt = staedte[(row, col)]
+        stadt_surface = font.render(stadt["name"], True, (220, 100, 100))
         screen.blit(stadt_surface, (MAP_WIDTH + 16, TOPBAR_HEIGHT + 112))
+        prod_surface = font.render(f"Produktion: {stadt['produktion']} Gold", True, (255, 215, 0))
+        screen.blit(prod_surface, (MAP_WIDTH + 16, TOPBAR_HEIGHT + 140))
+        besitzer_label = {
+            BESITZER_SPIELER: ("Spieler", (80, 220, 80)),
+            BESITZER_KI:      ("Computergegner", (220, 80, 80)),
+            BESITZER_KEINER:  ("Keiner", (160, 160, 160)),
+        }[stadt["besitzer"]]
+        bes_surface = font.render(f"Besitzer: {besitzer_label[0]}", True, besitzer_label[1])
+        screen.blit(bes_surface, (MAP_WIDTH + 16, TOPBAR_HEIGHT + 168))
 
 
 def main():
@@ -202,6 +254,7 @@ def main():
     tiles = lade_tiles()
     auswahl = None  # (col, row) des angeklickten Feldes
     zug = 1
+    gold = lade_gold_aus_db() if lade_karte_aus_db() else 10
     naechster_btn = pygame.Rect(0, 0, 0, 0)
     beenden_btn = pygame.Rect(0, 0, 0, 0)
 
@@ -209,22 +262,23 @@ def main():
     while running:
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
-                speichere_karte(KARTE, STAEDTE)
+                speichere_karte(KARTE, STAEDTE, gold)
                 running = False
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 mx, my = event.pos
                 if my < TOPBAR_HEIGHT:
                     if naechster_btn.collidepoint(mx, my):
                         zug += 1
+                        gold += sum(s["produktion"] for s in STAEDTE.values())
                     elif beenden_btn.collidepoint(mx, my):
-                        speichere_karte(KARTE, STAEDTE)
+                        speichere_karte(KARTE, STAEDTE, gold)
                         running = False
                 elif mx < MAP_WIDTH:
                     col = mx // TILE_SIZE
                     row = (my - TOPBAR_HEIGHT) // TILE_SIZE
                     auswahl = (col, row)
 
-        naechster_btn, beenden_btn = zeichne_topbar(screen, font, zug)
+        naechster_btn, beenden_btn = zeichne_topbar(screen, font, zug, gold)
         zeichne_karte(screen, tiles, auswahl, STAEDTE)
         zeichne_sidebar(screen, font, auswahl, STAEDTE)
         pygame.display.flip()
