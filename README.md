@@ -20,6 +20,10 @@ pip install -r requirements.txt
 .venv/bin/python game.py
 ```
 
+## Screenshot
+
+![Spielansicht](screenshot.png)
+
 ## Spielprinzip
 
 - Die Karte wird beim ersten Start zufällig erzeugt und beim Beenden gespeichert.
