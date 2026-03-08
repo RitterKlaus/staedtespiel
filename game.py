@@ -1,4 +1,6 @@
 import pygame
+import random
+import sqlite3
 
 TILE_SIZE = 64
 SIDEBAR_WIDTH = 240
@@ -23,24 +25,43 @@ GELAENDE_NAME = {
     WUESTE: "Wüste",
 }
 
-# 12x12 map
-KARTE = [
-    [SEE,    SEE,    WIESE,  WIESE,  WALD,   WALD,   WALD,   BERGE,  BERGE,  BERGE,  WUESTE, WUESTE],
-    [SEE,    SUMPF,  SUMPF,  WIESE,  WIESE,  WALD,   WALD,   HUEGEL, BERGE,  BERGE,  BERGE,  WUESTE],
-    [SUMPF,  SUMPF,  WIESE,  WIESE,  WIESE,  WALD,   HUEGEL, HUEGEL, BERGE,  BERGE,  WUESTE, WUESTE],
-    [SUMPF,  WIESE,  WIESE,  SEE,    SEE,    WIESE,  HUEGEL, BERGE,  BERGE,  HUEGEL, WUESTE, WUESTE],
-    [WIESE,  WIESE,  SEE,    SEE,    SEE,    WIESE,  WIESE,  HUEGEL, HUEGEL, WALD,   WALD,   WUESTE],
-    [WIESE,  WIESE,  WIESE,  SEE,    WIESE,  WIESE,  WALD,   WALD,   HUEGEL, WALD,   WALD,   BERGE ],
-    [WALD,   WIESE,  WIESE,  WIESE,  WIESE,  WALD,   WALD,   WALD,   WALD,   HUEGEL, BERGE,  BERGE ],
-    [WALD,   WALD,   WIESE,  WIESE,  WALD,   WALD,   SUMPF,  SUMPF,  WALD,   BERGE,  BERGE,  BERGE ],
-    [WUESTE, WALD,   WALD,   WIESE,  WALD,   SUMPF,  SUMPF,  SUMPF,  HUEGEL, BERGE,  BERGE,  BERGE ],
-    [WUESTE, WUESTE, WALD,   WALD,   WIESE,  WIESE,  SUMPF,  HUEGEL, HUEGEL, WALD,   BERGE,  BERGE ],
-    [WUESTE, WUESTE, WUESTE, WALD,   WIESE,  WIESE,  WIESE,  HUEGEL, WALD,   WALD,   WALD,   BERGE ],
-    [WUESTE, WUESTE, WUESTE, WUESTE, WIESE,  WIESE,  HUEGEL, HUEGEL, WALD,   WALD,   SEE,    SEE   ],
-]
+GELAENDE_TYPEN      = [WIESE, WALD, HUEGEL, BERGE, SEE, SUMPF, WUESTE]
+GELAENDE_GEWICHTE   = [30,    30,   10,     10,    10,  5,     5]
 
-ROWS = len(KARTE)
-COLS = len(KARTE[0])
+ROWS = 12
+COLS = 12
+
+def erzeuge_karte():
+    return [
+        random.choices(GELAENDE_TYPEN, weights=GELAENDE_GEWICHTE, k=COLS)
+        for _ in range(ROWS)
+    ]
+
+DB_PFAD = "spiel.db"
+
+def speichere_karte(karte):
+    with sqlite3.connect(DB_PFAD) as con:
+        con.execute("CREATE TABLE IF NOT EXISTS karte (row INTEGER, col INTEGER, gelaende TEXT)")
+        con.execute("DELETE FROM karte")
+        con.executemany(
+            "INSERT INTO karte (row, col, gelaende) VALUES (?, ?, ?)",
+            [(r, c, karte[r][c]) for r in range(ROWS) for c in range(COLS)],
+        )
+
+def lade_karte_aus_db():
+    try:
+        with sqlite3.connect(DB_PFAD) as con:
+            rows = con.execute("SELECT row, col, gelaende FROM karte ORDER BY row, col").fetchall()
+        if not rows:
+            return None
+        karte = [[None] * COLS for _ in range(ROWS)]
+        for r, c, g in rows:
+            karte[r][c] = g
+        return karte
+    except sqlite3.OperationalError:
+        return None
+
+KARTE = lade_karte_aus_db() or erzeuge_karte()
 
 MAP_WIDTH  = COLS * TILE_SIZE
 MAP_HEIGHT = ROWS * TILE_SIZE
@@ -145,6 +166,7 @@ def main():
     while running:
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
+                speichere_karte(KARTE)
                 running = False
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 mx, my = event.pos
@@ -152,6 +174,7 @@ def main():
                     if naechster_btn.collidepoint(mx, my):
                         zug += 1
                     elif beenden_btn.collidepoint(mx, my):
+                        speichere_karte(KARTE)
                         running = False
                 elif mx < MAP_WIDTH:
                     col = mx // TILE_SIZE
