@@ -53,9 +53,45 @@ def lade_gold_aus_db():
     except sqlite3.OperationalError:
         return None
 
-def speichere_karte(karte, staedte, gold):
+def speichere_einheiten(einheiten):
+    with sqlite3.connect(DB_PFAD) as con:
+        con.execute("CREATE TABLE IF NOT EXISTS einheiten (name TEXT, besitzer TEXT, row INTEGER, col INTEGER)")
+        con.execute("DELETE FROM einheiten")
+        con.executemany(
+            "INSERT INTO einheiten (name, besitzer, row, col) VALUES (?, ?, ?, ?)",
+            [(e["name"], e["besitzer"], e["row"], e["col"]) for e in einheiten],
+        )
+
+def lade_einheiten_aus_db():
+    try:
+        with sqlite3.connect(DB_PFAD) as con:
+            rows = con.execute("SELECT name, besitzer, row, col FROM einheiten").fetchall()
+        return [{"name": name, "besitzer": besitzer, "row": row, "col": col}
+                for name, besitzer, row, col in rows]
+    except sqlite3.OperationalError:
+        return []
+
+def speichere_rekrutierung(rekrutierung):
+    with sqlite3.connect(DB_PFAD) as con:
+        con.execute("CREATE TABLE IF NOT EXISTS rekrutierung (name TEXT, kosten INTEGER, row INTEGER, col INTEGER)")
+        con.execute("DELETE FROM rekrutierung")
+        if rekrutierung:
+            con.execute("INSERT INTO rekrutierung (name, kosten, row, col) VALUES (?, ?, ?, ?)",
+                        (rekrutierung["name"], rekrutierung["kosten"], rekrutierung["row"], rekrutierung["col"]))
+
+def lade_rekrutierung_aus_db():
+    try:
+        with sqlite3.connect(DB_PFAD) as con:
+            row = con.execute("SELECT name, kosten, row, col FROM rekrutierung").fetchone()
+        return {"name": row[0], "kosten": row[1], "row": row[2], "col": row[3]} if row else None
+    except sqlite3.OperationalError:
+        return None
+
+def speichere_karte(karte, staedte, gold, einheiten, rekrutierung):
     speichere_staedte(staedte)
     speichere_gold(gold)
+    speichere_einheiten(einheiten)
+    speichere_rekrutierung(rekrutierung)
     with sqlite3.connect(DB_PFAD) as con:
         con.execute("CREATE TABLE IF NOT EXISTS karte (row INTEGER, col INTEGER, gelaende TEXT)")
         con.execute("DELETE FROM karte")
@@ -80,6 +116,12 @@ def lade_karte_aus_db():
 BESITZER_SPIELER = "spieler"
 BESITZER_KI      = "ki"
 BESITZER_KEINER  = None
+
+EINHEITEN = [
+    {"name": "Späher",  "kosten": 1},
+    {"name": "Kämpfer", "kosten": 3},
+    {"name": "Ritter",  "kosten": 5},
+]
 
 def erzeuge_staedte(anzahl=8):
     positionen = list({
@@ -202,45 +244,91 @@ def zeichne_karte(screen, tiles, auswahl, staedte):
         pygame.draw.rect(screen, (255, 255, 0), rect, 3)
 
 
-def zeichne_sidebar(screen, font, auswahl, staedte):
+BESITZER_LABEL = {
+    BESITZER_SPIELER: ("Spieler",       (80, 220, 80)),
+    BESITZER_KI:      ("Computergegner",(220, 80, 80)),
+    BESITZER_KEINER:  ("Keiner",        (160, 160, 160)),
+}
+
+def zeichne_sidebar(screen, font, auswahl, staedte, auswahl_einheit, rekrutierung, einheiten):
     sidebar_rect = pygame.Rect(MAP_WIDTH, TOPBAR_HEIGHT, SIDEBAR_WIDTH, MAP_HEIGHT)
     pygame.draw.rect(screen, (30, 30, 30), sidebar_rect)
     pygame.draw.line(screen, (80, 80, 80), (MAP_WIDTH, TOPBAR_HEIGHT), (MAP_WIDTH, TOPBAR_HEIGHT + MAP_HEIGHT), 2)
 
+    einheit_rects = []
+    rekrutieren_rect = pygame.Rect(0, 0, 0, 0)
+
     if auswahl is None:
         text = font.render("Kein Feld gewählt", True, (160, 160, 160))
         screen.blit(text, (MAP_WIDTH + 16, TOPBAR_HEIGHT + 20))
-        return
+        return einheit_rects, rekrutieren_rect
 
     col, row = auswahl
     gelaende = KARTE[row][col]
 
-    titel = font.render("Feld-Info", True, (200, 200, 200))
-    screen.blit(titel, (MAP_WIDTH + 16, TOPBAR_HEIGHT + 16))
+    def sep(y):
+        pygame.draw.line(screen, (80, 80, 80),
+                         (MAP_WIDTH + 16, y), (MAP_WIDTH + SIDEBAR_WIDTH - 16, y), 1)
 
-    pygame.draw.line(screen, (80, 80, 80),
-                     (MAP_WIDTH + 16, TOPBAR_HEIGHT + 44),
-                     (MAP_WIDTH + SIDEBAR_WIDTH - 16, TOPBAR_HEIGHT + 44), 1)
-
-    name_surface = font.render(GELAENDE_NAME[gelaende], True, (255, 255, 255))
-    screen.blit(name_surface, (MAP_WIDTH + 16, TOPBAR_HEIGHT + 56))
-
-    pos_surface = font.render(f"Spalte {col + 1}, Zeile {row + 1}", True, (160, 160, 160))
-    screen.blit(pos_surface, (MAP_WIDTH + 16, TOPBAR_HEIGHT + 84))
+    y = TOPBAR_HEIGHT + 16
+    screen.blit(font.render("Feld-Info", True, (200, 200, 200)), (MAP_WIDTH + 16, y))
+    y += 28; sep(y); y += 12
+    screen.blit(font.render(GELAENDE_NAME[gelaende], True, (255, 255, 255)), (MAP_WIDTH + 16, y))
+    y += 28
+    screen.blit(font.render(f"Spalte {col + 1}, Zeile {row + 1}", True, (160, 160, 160)), (MAP_WIDTH + 16, y))
+    y += 28
 
     if (row, col) in staedte:
         stadt = staedte[(row, col)]
-        stadt_surface = font.render(stadt["name"], True, (220, 100, 100))
-        screen.blit(stadt_surface, (MAP_WIDTH + 16, TOPBAR_HEIGHT + 112))
-        prod_surface = font.render(f"Produktion: {stadt['produktion']} Gold", True, (255, 215, 0))
-        screen.blit(prod_surface, (MAP_WIDTH + 16, TOPBAR_HEIGHT + 140))
-        besitzer_label = {
-            BESITZER_SPIELER: ("Spieler", (80, 220, 80)),
-            BESITZER_KI:      ("Computergegner", (220, 80, 80)),
-            BESITZER_KEINER:  ("Keiner", (160, 160, 160)),
-        }[stadt["besitzer"]]
-        bes_surface = font.render(f"Besitzer: {besitzer_label[0]}", True, besitzer_label[1])
-        screen.blit(bes_surface, (MAP_WIDTH + 16, TOPBAR_HEIGHT + 168))
+        sep(y); y += 12
+        screen.blit(font.render(stadt["name"], True, (220, 100, 100)), (MAP_WIDTH + 16, y))
+        y += 28
+        screen.blit(font.render(f"Produktion: {stadt['produktion']} Gold", True, (255, 215, 0)), (MAP_WIDTH + 16, y))
+        y += 28
+        lbl, farbe = BESITZER_LABEL[stadt["besitzer"]]
+        screen.blit(font.render(f"Besitzer: {lbl}", True, farbe), (MAP_WIDTH + 16, y))
+        y += 28
+
+        if stadt["besitzer"] == BESITZER_SPIELER:
+            sep(y); y += 12
+            screen.blit(font.render("Rekrutierung", True, (200, 200, 200)), (MAP_WIDTH + 16, y))
+            y += 28; sep(y); y += 12
+            for i, einheit in enumerate(EINHEITEN):
+                erect = pygame.Rect(MAP_WIDTH + 8, y - 2, SIDEBAR_WIDTH - 16, 24)
+                einheit_rects.append(erect)
+                if auswahl_einheit == i:
+                    pygame.draw.rect(screen, (60, 60, 80), erect, border_radius=3)
+                screen.blit(font.render(f"{einheit['name']}  {einheit['kosten']} Gold", True, (220, 220, 220)), (MAP_WIDTH + 16, y))
+                y += 28
+            rek_text_str = f"In Arbeit: {rekrutierung['name']}" if rekrutierung else "Rekrutieren"
+            rek_farbe    = (60, 80, 60) if rekrutierung else (60, 60, 100)
+            rek_text = font.render(rek_text_str, True, (220, 220, 220))
+            rekrutieren_rect = pygame.Rect(MAP_WIDTH + 16, y, rek_text.get_width() + 20, 26)
+            pygame.draw.rect(screen, rek_farbe, rekrutieren_rect, border_radius=4)
+            pygame.draw.rect(screen, (100, 100, 160), rekrutieren_rect, 1, border_radius=4)
+            screen.blit(rek_text, (MAP_WIDTH + 26, y + (26 - rek_text.get_height()) // 2))
+            y += 38
+
+    # Einheiten auf diesem Feld
+    sep(y); y += 12
+    screen.blit(font.render("Einheiten", True, (200, 200, 200)), (MAP_WIDTH + 16, y))
+    y += 28; sep(y); y += 12
+    einheiten_hier = [e for e in einheiten if e["row"] == row and e["col"] == col]
+    if einheiten_hier:
+        gruppen = {}
+        for e in einheiten_hier:
+            gruppen.setdefault(e["besitzer"], []).append(e["name"])
+        for besitzer, namen in gruppen.items():
+            lbl, farbe = BESITZER_LABEL[besitzer]
+            screen.blit(font.render(lbl + ":", True, farbe), (MAP_WIDTH + 16, y))
+            y += 22
+            for name in namen:
+                screen.blit(font.render(f"  {name}", True, (200, 200, 200)), (MAP_WIDTH + 16, y))
+                y += 20
+    else:
+        screen.blit(font.render("Keine", True, (100, 100, 100)), (MAP_WIDTH + 16, y))
+
+    return einheit_rects, rekrutieren_rect
 
 
 def main():
@@ -253,34 +341,61 @@ def main():
 
     tiles = lade_tiles()
     auswahl = None  # (col, row) des angeklickten Feldes
+    auswahl_einheit = None  # Index in EINHEITEN
+    rekrutierung = lade_rekrutierung_aus_db() if gespeicherte_karte else None
+    einheiten = lade_einheiten_aus_db() if gespeicherte_karte else []
     zug = 1
     gold = lade_gold_aus_db() if lade_karte_aus_db() else 10
     naechster_btn = pygame.Rect(0, 0, 0, 0)
     beenden_btn = pygame.Rect(0, 0, 0, 0)
+    einheit_rects = []
+    rekrutieren_rect = pygame.Rect(0, 0, 0, 0)
 
     running = True
     while running:
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
-                speichere_karte(KARTE, STAEDTE, gold)
+                speichere_karte(KARTE, STAEDTE, gold, einheiten, rekrutierung)
                 running = False
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 mx, my = event.pos
                 if my < TOPBAR_HEIGHT:
                     if naechster_btn.collidepoint(mx, my):
                         zug += 1
-                        gold += sum(s["produktion"] for s in STAEDTE.values())
+                        gold += sum(s["produktion"] for s in STAEDTE.values() if s["besitzer"] == BESITZER_SPIELER)
+                        if rekrutierung:
+                            einheiten.append({
+                                "name": rekrutierung["name"],
+                                "besitzer": BESITZER_SPIELER,
+                                "row": rekrutierung["row"],
+                                "col": rekrutierung["col"],
+                            })
+                            rekrutierung = None
+                            auswahl_einheit = None
                     elif beenden_btn.collidepoint(mx, my):
-                        speichere_karte(KARTE, STAEDTE, gold)
+                        speichere_karte(KARTE, STAEDTE, gold, einheiten, rekrutierung)
                         running = False
+                elif mx >= MAP_WIDTH:
+                    for i, erect in enumerate(einheit_rects):
+                        if erect.collidepoint(mx, my):
+                            auswahl_einheit = i
+                            break
+                    if rekrutieren_rect.collidepoint(mx, my) and not rekrutierung:
+                        if auswahl_einheit is not None and auswahl is not None:
+                            einheit = EINHEITEN[auswahl_einheit]
+                            if gold >= einheit["kosten"]:
+                                gold -= einheit["kosten"]
+                                rekrutierung = {**einheit, "row": auswahl[1], "col": auswahl[0]}
                 elif mx < MAP_WIDTH:
                     col = mx // TILE_SIZE
                     row = (my - TOPBAR_HEIGHT) // TILE_SIZE
+                    if (col, row) != auswahl:
+                        auswahl_einheit = None
                     auswahl = (col, row)
 
         naechster_btn, beenden_btn = zeichne_topbar(screen, font, zug, gold)
         zeichne_karte(screen, tiles, auswahl, STAEDTE)
-        zeichne_sidebar(screen, font, auswahl, STAEDTE)
+        einheit_rects, rekrutieren_rect = zeichne_sidebar(screen, font, auswahl, STAEDTE, auswahl_einheit, rekrutierung, einheiten)
         pygame.display.flip()
         clock.tick(60)
 
